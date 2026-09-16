@@ -18,11 +18,12 @@ test('the page talks to weawr only through the client library and /api/v1; the o
   for (const old of ['/api/state', '/api/events', '/api/tail', '/api/done', '/api/undone', '/api/tidy', '/api/exit', 'EventSource(']) assert.ok(!js.includes(old), `app.js still uses ${old}`);
   assert.ok(!/require\(|from '|import /.test(js), 'no module imports: it is a classic script');
   const html = fs.readFileSync(path.join(SRC, 'app.html'), 'utf8');
-  assert.ok(html.indexOf('/client.js') < html.indexOf('/app.js'), 'the client loads before the page');
+  assert.ok(html.indexOf('/client.js') < html.indexOf('/morph.js') && html.indexOf('/morph.js') < html.indexOf('/app.js'), 'the client and the morph load before the page');
+  assert.ok(!/require\(|from '|import /.test(fs.readFileSync(path.join(SRC, 'morph.js'), 'utf8')), 'morph.js is a classic script too');
 });
 
 test('the built page is a static site: html, css, js, the client, and the brand assets', () => {
-  for (const f of ['app.html', 'app.css', 'app.js', 'unlock.html', 'client.js', 'assets/icons/favicon.svg', 'assets/logo/weawr-mark-reverse.svg']) assert.ok(fs.existsSync(path.join(DIST, f)), f);
+  for (const f of ['app.html', 'app.css', 'app.js', 'morph.js', 'unlock.html', 'client.js', 'assets/icons/favicon.svg', 'assets/logo/weawr-mark-reverse.svg']) assert.ok(fs.existsSync(path.join(DIST, f)), f);
   assert.match(fs.readFileSync(path.join(DIST, 'client.js'), 'utf8'), /window\.WeawrClient = /);
 });
 
@@ -82,4 +83,71 @@ test('the page never declares a function and a variable under one name (the belt
   const vars = new Set([...src.matchAll(/^\s*var\s+([A-Za-z_$][\w$]*)\s*=/gm)].map((m) => m[1]));
   const both = [...fns].filter((n) => vars.has(n));
   assert.deepEqual(both, [], `declared as both a function and a var: ${both.join(', ')}`);
+});
+
+// A DOM small enough to be a fixture: the parts of it morph.js touches, and a parser for the
+// markup these tests write (elements, attributes in double quotes, text).
+function fakeDom() {
+  class N {
+    constructor(type, name, value) { this.nodeType = type; this.nodeName = name; this.nodeValue = value; this.childNodes = []; this.parentNode = null; this.attributes = []; }
+    get id() { return this.getAttribute('id') || ''; }
+    get firstChild() { return this.childNodes[0] || null; }
+    get nextSibling() { const p = this.parentNode; return p ? p.childNodes[p.childNodes.indexOf(this) + 1] || null : null; }
+    hasAttribute(n) { return this.attributes.some((a) => a.name === n); }
+    getAttribute(n) { const a = this.attributes.find((a) => a.name === n); return a ? a.value : null; }
+    setAttribute(n, v) { const a = this.attributes.find((a) => a.name === n); if (a) a.value = v; else this.attributes.push({ name: n, value: v }); }
+    removeAttribute(n) { this.attributes = this.attributes.filter((a) => a.name !== n); }
+    appendChild(c) { if (c.parentNode) c.parentNode.removeChild(c); c.parentNode = this; this.childNodes.push(c); return c; }
+    insertBefore(c, ref) { if (c.parentNode) c.parentNode.removeChild(c); c.parentNode = this; this.childNodes.splice(this.childNodes.indexOf(ref), 0, c); return c; }
+    removeChild(c) { this.childNodes.splice(this.childNodes.indexOf(c), 1); c.parentNode = null; return c; }
+    get outerHTML() { return this.nodeType === 3 ? this.nodeValue : `<${this.nodeName.toLowerCase()}${this.attributes.map((a) => ` ${a.name}="${a.value}"`).join('')}>${this.childNodes.map((c) => c.outerHTML).join('')}</${this.nodeName.toLowerCase()}>`; }
+  }
+  const parse = (html) => {
+    const root = new N(11, '#document-fragment', null); let cur = root;
+    for (const tok of html.split(/(<[^>]+>)/).filter(Boolean)) {
+      if (tok[0] !== '<') cur.appendChild(new N(3, '#text', tok));
+      else if (tok[1] === '/') cur = cur.parentNode;
+      else { const [, name, attrs] = /^<([a-z0-9]+)(.*?)\/?>$/.exec(tok); const el = new N(1, name.toUpperCase(), null); for (const [, k, v] of attrs.matchAll(/([a-z-]+)="([^"]*)"/g)) el.setAttribute(k, v); cur.appendChild(el); if (!tok.endsWith('/>')) cur = el; }
+    }
+    return root;
+  };
+  const document = { createElement: () => ({ set innerHTML(h) { this.content = parse(h); } }) };
+  const window = {};
+  new Function('window', 'document', fs.readFileSync(path.join(SRC, 'morph.js'), 'utf8'))(window, document);
+  const el = (html) => { const r = new N(1, 'DIV', null); for (const c of [...parse(html).childNodes]) r.appendChild(c); return r; };
+  return { morph: window.morph, el, html: (n) => n.childNodes.map((c) => c.outerHTML).join('') };
+}
+
+test('morph patches what changed and keeps the nodes that did not, so a render is not a reload', () => {
+  const { morph, el, html } = fakeDom();
+  // the same markup again: nothing moves
+  let root = el('<div class="a"><i class="led green"></i>text</div>');
+  const led = root.firstChild.firstChild;
+  morph(root, '<div class="a"><i class="led green"></i>text</div>');
+  assert.equal(root.firstChild.firstChild, led);
+  // text and attributes change in place; an attribute that went is removed
+  morph(root, '<div class="a on"><i class="led red"></i>later</div>');
+  assert.equal(root.firstChild.firstChild, led); assert.equal(led.getAttribute('class'), 'led red');
+  assert.equal(html(root), '<div class="a on"><i class="led red"></i>later</div>');
+  morph(root, '<div><i></i>later</div>');
+  assert.equal(root.firstChild.firstChild, led); assert.equal(led.hasAttribute('class'), false);
+  // children come and go at the end
+  morph(root, '<div><i></i>later</div><p>new</p>');
+  assert.equal(root.childNodes.length, 2); assert.equal(root.firstChild.firstChild, led);
+  morph(root, '<div><i></i>later</div>');
+  assert.equal(html(root), '<div><i></i>later</div>');
+  // a keyed list: an entry gone from the front or added there leaves the other entries' nodes alone
+  root = el('<a id="x">x</a><a id="y">y</a><a id="z">z</a>');
+  const [x, y, z] = root.childNodes;
+  morph(root, '<a id="y">y</a><a id="z">z</a>');
+  assert.deepEqual(root.childNodes, [y, z]);
+  morph(root, '<a id="w">w</a><a id="y">y2</a><a id="z">z</a>');
+  assert.deepEqual(root.childNodes.slice(1), [y, z]); assert.equal(html(root), '<a id="w">w</a><a id="y">y2</a><a id="z">z</a>');
+  morph(root, '<a id="z">z</a><a id="y">y2</a>');
+  assert.deepEqual(root.childNodes, [z, y]);
+  assert.notEqual(x.parentNode, root);
+  // a different element in the same place is replaced, not patched
+  root = el('<b>one</b>');
+  morph(root, '<i>one</i>');
+  assert.equal(html(root), '<i>one</i>');
 });

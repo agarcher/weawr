@@ -4,6 +4,8 @@
 //   #/i/<team>/<issue>  one issue
 // No framework, no build step. Everything shown comes from weawr serve through @weawr/client
 // (window.WeawrClient): one host snapshot over SSE, commands with request ids, operations.
+// A render is one HTML string, patched onto the page by morph.js (window.morph) so only what
+// changed is touched.
 (function () {
   'use strict';
   var root = document.getElementById('app');
@@ -321,7 +323,7 @@
     if (!view) return;
     var r = route();
     chosen = r.kind === 'index' ? null : r.id;
-    root.innerHTML = r.kind === 'issue' ? detail(r.id, r.key) : r.kind === 'team' ? overview() : index();
+    morph(root, r.kind === 'issue' ? detail(r.id, r.key) : r.kind === 'team' ? overview() : index());
   }
   // A Mark done or Undo is over when the console's state shows it: the task out of Alerts and
   // in output (or back, for Undo), or gone from the view. A state that never catches up (the

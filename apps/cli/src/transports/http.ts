@@ -96,7 +96,7 @@ export function createHandler({ gate, hub, hostname = os.hostname(), log = () =>
     return v;
   };
   const text = (rel: string) => (file(rel) as string | null) ?? '';
-  const pages = web ? { app: () => text('app.html'), unlock: () => text('unlock.html'), css: () => text('app.css'), js: () => text('app.js'), client: () => (clientJs ? (() => { try { return fs.readFileSync(clientJs, 'utf8'); } catch { return ''; } })() : text('client.js')) } : null;
+  const pages = web ? { app: () => text('app.html'), unlock: () => text('unlock.html'), css: () => text('app.css'), js: () => text('app.js'), morph: () => text('morph.js'), client: () => (clientJs ? (() => { try { return fs.readFileSync(clientJs, 'utf8'); } catch { return ''; } })() : text('client.js')) } : null;
   const icons = Object.fromEntries(Object.entries(ICONS).map(([p, [f, type]]) => [p, { body: () => file(path.join('assets', 'icons', f), true) as Buffer | null, type }]));
   const mark = () => { try { const svg = text(path.join('assets', 'logo', 'weawr-mark-reverse.svg')).replace('<svg ', '<svg class="mark" ').replace(' role="img" aria-label="weawr"', ' aria-hidden="true"'); return svg ? `<a class="home" href="${REPO_URL}" target="_blank" rel="noopener" title="weawr on GitHub" aria-label="weawr on GitHub">${svg}</a>` : ''; } catch { return ''; } };
   const html = (tpl: string) => tpl.replace(/\{\{hostname\}\}/g, hostname).replace(/\{\{gated\}\}/g, gate.enabled ? 'true' : 'false').replace(/\{\{mark\}\}/g, mark()).replace(/\{\{theme\}\}/g, theme).replace('</head>', live ? '<script>window.WEAWR_LIVE=true</script></head>' : '</head>');
@@ -200,6 +200,7 @@ export function createHandler({ gate, hub, hostname = os.hostname(), log = () =>
       // ---- ungated: the page's static files, the gate itself, health
       if (req.method === 'GET' && pages && url.pathname === '/app.css') return send(res, 200, pages.css(), 'text/css; charset=utf-8');
       if (req.method === 'GET' && pages && url.pathname === '/app.js') return send(res, 200, pages.js(), 'text/javascript; charset=utf-8');
+      if (req.method === 'GET' && pages && url.pathname === '/morph.js') return send(res, 200, pages.morph(), 'text/javascript; charset=utf-8');
       if (req.method === 'GET' && pages && url.pathname === '/client.js') return send(res, 200, pages.client(), 'text/javascript; charset=utf-8');
       if (req.method === 'GET' && (m = /^\/themes\/([a-z0-9-]+)\.css$/.exec(url.pathname))) { const css = themeCss(m[1]); return css !== null ? send(res, 200, css, 'text/css; charset=utf-8') : send(res, 404, { error: 'no such theme' }); }
       if (req.method === 'GET' && icons[url.pathname]) { const { body, type } = icons[url.pathname]; const b = body(); return b ? send(res, 200, b, type, { 'cache-control': live ? 'no-store' : 'public, max-age=86400' }) : send(res, 404, { error: 'not found' }); }

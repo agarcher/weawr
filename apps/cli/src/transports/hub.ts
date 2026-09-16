@@ -94,7 +94,7 @@ export class TeamHub {
       const idx = indexSnapshot(this.herdrSnapshot);
       const snap: HostSnapshot = { protocolVersion: 1, hostname: this.hostname, version: this.version, herdr: { connected: !!this.herdrSnapshot, version: idx.version }, generatedAt: new Date(now).toISOString(), teams };
       // Elapsed times move every tick; only a change in what is *shown* is worth a push.
-      const hash = crypto.createHash('sha1').update(JSON.stringify(snap, (k, v) => (/Ms$/.test(k) || k === 'generatedAt' || k === 'observedAt' || k === 'heartbeatAt' || k === 'segments') ? undefined : v)).digest('hex');
+      const hash = crypto.createHash('sha1').update(JSON.stringify(snap, (k, v) => (/Ms$/.test(k) || k === 'generatedAt' || k === 'observedAt' || k === 'heartbeatAt' || k === 'herdrAt' || k === 'trackerAt' || k === 'segments') ? undefined : v)).digest('hex');
       this.current = snap;
       if (hash !== this.hash) { this.hash = hash; this.emit({ type: 'snapshot', snapshot: snap }); }
       return snap;

@@ -212,3 +212,30 @@ test('serve: a gated host locks the page, refuses the API without a session, and
   const lockedOut = await fetch(`${h.url}/unlock`, { method: 'POST', headers: { 'content-type': 'application/json', origin: h.url }, body: JSON.stringify({ code: '4321' }) });
   assert.equal(lockedOut.status, 429);
 });
+
+test('serve: a tick that only moved the freshness clocks pushes nothing; a page is redrawn for what changed, not for when it was looked at', async (t) => {
+  // no PR on either run, or the owner's enricher asks GitHub and its answer is a real change
+  const on = repo(t, 'online', { 'GH-1@impl': RUN('', 'GH-1@impl', { result: { status: 'done' } }) });
+  const off = repo(t, 'offline', { 'GH-2@impl': RUN('', 'GH-2@impl', { result: { status: 'done' } }) });
+  await owner(t, on, 'fon');
+  // a host whose herdr answers, so the offline team carries a herdrAt too
+  const regDir = fs.mkdtempSync(path.join(os.tmpdir(), 'weawr-regs-'));
+  t.after(() => fs.rmSync(regDir, { recursive: true, force: true }));
+  const herdr = { async run(args) { if (args[0] === 'api') return { result: { snapshot: { version: '9', agents: [], workspaces: [], panes: [] } } }; return {}; }, async readAgent() { return 'screen'; } };
+  const hub = new TeamHub({ herdr, version: 'test', promptsRoot: PROMPTS, registrations: regDir, legacyRegistry: null, intervalMs: 200, log: () => {} });
+  const reg = (teamId, repo, over = {}) => writeRegistration(regDir, { teamId, repo, name: path.basename(repo), tracker: 'linear', version: 'test', hostId: 'h', pid: 1, pollSeconds: 30, workspaceId: null, logPath: null, socketPath: teamPaths(repo).socketPath, statePath: null, lastPoll: new Date().toISOString(), lastSuccessfulPoll: null, lastPollError: null, ...over });
+  reg('fon', on); reg('foff', off, { lastPoll: '2020-01-01T00:00:00Z' });
+  const pushes = [];
+  hub.subscribe((m) => { if (m.type === 'snapshot') pushes.push(m.snapshot); });
+  hub.start(); t.after(() => hub.stop());
+  await until(() => pushes.some((s) => s.teams.length === 2));
+  const settled = pushes.length;
+  const byId = Object.fromEntries(hub.current.teams.map((f) => [f.teamId, f]));
+  assert.ok(byId.fon.freshness.herdrAt && byId.foff.freshness.herdrAt, 'both snapshots carry a herdr clock');
+  // many host ticks and a few of the owner's herdr refreshes, nothing shown changed
+  await new Promise((r) => setTimeout(r, 4500));
+  assert.equal(pushes.length, settled, `pushed ${pushes.length - settled} snapshot(s) with nothing shown changed`);
+  // a real change is still pushed
+  reg('foff', off, { lastPoll: '2020-01-01T00:00:00Z', version: 'test-2' });
+  await until(() => pushes.length > settled);
+});

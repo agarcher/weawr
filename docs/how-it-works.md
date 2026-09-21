@@ -137,7 +137,8 @@ merged:
   `git fetch origin <base>`, then start from whichever of `<base>` and `origin/<base>` contains the
   other. The base is the default branch — `baseBranch`, or what `origin/HEAD` says — or another
   role's branch where the rule says [`basedOn`](roles.md#reviewing-the-actual-code-basedon); a later
-  turn on a worktree that already exists is fast-forwarded the same way. The branch is cut from a
+  turn on a worktree that already exists is brought up to that tip too — unless its branch has
+  commits of its own that the base lacks, which are never moved. The branch is cut from a
   commit rather than from a name, so nothing ends up quietly tracking `main`.
 - **The checkout itself is fast-forwarded** onto that branch, because `"worktree": "none"` runs work
   in it, `"herdr"` worktrees are cut from its HEAD, and the config the watcher reloads before every

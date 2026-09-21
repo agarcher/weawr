@@ -570,6 +570,10 @@ export class TeamEngine {
       // watch on it must not be lost to a result that forgot to repeat the URL.
       nudges: nudges.length ? nudges : undefined,
       prUrl: previous?.prUrl || undefined,
+      // The commit weawr last left this role's branch on. A later turn's HEAD is compared with it
+      // to tell a role that only read from one that committed — see catchUp(). It is carried
+      // from turn to turn until one of them places the worktree again.
+      placedAt: previous?.placedAt || undefined,
       // The recipe a task started under is the recipe its later turns get; an upgrade is for new tasks.
       recipeRevision: previous?.recipeRevision ?? this.recipeRevision,
       // The policy this attempt runs under, as resolved now; ruleFor() lays it over the live rule.
@@ -636,8 +640,7 @@ export class TeamEngine {
           run.basedOn = this.baseBranchFor(issue, rule, key);
           const ours = previous?.worktreePath && path.resolve(previous.worktreePath) === path.resolve(ws.cwd);
           if (run.basedOn && ours && existing.agent_status !== 'working') {
-            const r = catchUp({ git: this.git, repo: rule.repo, at: ws.cwd, base: run.basedOn });
-            this.log(`${key}: ${r.moved ? `caught up to ${run.basedOn} (${String(r.from).slice(0, 7)} → ${String(r.at).slice(0, 7)})` : `not moved onto ${run.basedOn}: ${r.reason}`}`);
+            this.catchUpRun(key, run, rule, ws.cwd);
           } else if (run.basedOn) {
             this.log(`${key}: not catching ${ws.cwd} up to ${run.basedOn}: ${ours ? 'the agent is working in it' : 'it is not a worktree weawr made for this role'}`);
           }
@@ -655,13 +658,15 @@ export class TeamEngine {
         const made = makeWorktree({ git: this.git, repo: rule.repo, dir: rule.worktreeDir, slug, branch: run.wantBranch || `herd/${slug}`, base: from });
         run.worktreePath = made.path;
         this.log(`${key}: worktree ${made.created ? 'created' : 'reused'} at ${made.path}${made.base ? ` from ${made.base}` : ''}`);
+        // Cut from the base just now: where it stands is where we put it, whatever an earlier
+        // worktree for this run was left on.
+        if (made.base) run.placedAt = this.git(['rev-parse', 'HEAD'], made.path) || undefined;
         // Anything but a worktree we just cut from the base is potentially behind it: a directory
         // reused from an earlier turn, and also a fresh directory put back on a branch that already
         // existed (the worktree was removed but the branch survived). Both leave this turn reading
         // the last turn's code, which is how a reviewer confirms its own findings were ignored.
         if (run.basedOn && !made.base) {
-          const r = catchUp({ git: this.git, repo: rule.repo, at: made.path, base: run.basedOn });
-          this.log(`${key}: ${r.moved ? `caught up to ${run.basedOn} (${String(r.from).slice(0, 7)} → ${String(r.at).slice(0, 7)})` : `not moved onto ${run.basedOn}: ${r.reason}`}`);
+          this.catchUpRun(key, run, rule, made.path);
         }
         ws = await this.workspaceIn(made.path, rule.repo, label);
       } else {
@@ -797,6 +802,21 @@ export class TeamEngine {
     }
     try { run.issueUpdatedAt = (await this.tracker.issueByKey(run.issueKey || issueKeyOf(key)))?.updatedAt || null; } catch { /* finishedAt is the fallback */ }
     this.saveState();
+  }
+
+  /**
+   * Bring a later turn's worktree up to the branch its rule is `basedOn`, and say what happened.
+   *
+   * `run.placedAt` — the commit we last left it on — is what lets catchUp() tell a reviewer's
+   * worktree, which follows its base anywhere, from an implementer's, whose commits are never
+   * moved off their branch. It is rewritten only when the worktree ends up on the tip of the base:
+   * a refusal leaves the old record standing, so the next turn asks the same question.
+   */
+  catchUpRun(key?: any, run?: any, rule?: any, at?: any) {
+    const r = catchUp({ git: this.git, repo: rule.repo, at, base: run.basedOn, placedAt: run.placedAt });
+    if (r.at) run.placedAt = r.at;
+    this.log(`${key}: ${r.moved ? `caught up to ${run.basedOn} (${String(r.from).slice(0, 7)} → ${String(r.at).slice(0, 7)})` : `not moved onto ${run.basedOn}: ${r.reason}`}`);
+    return r;
   }
 
   /**

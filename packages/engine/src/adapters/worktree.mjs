@@ -167,19 +167,41 @@ export function makeWorktree({ git, repo, dir = '.weawr/worktrees', slug, branch
  * worktree is already there from the first turn, and the whole reason there is a second turn is
  * that the implementer pushed something since.
  *
- * Deliberately blunt — `reset --hard` — and deliberately narrow. It runs only in a worktree
- * weawr made for a role whose work is reading, so the thing it throws away is a reviewer's
- * scratch files, never anybody's commits: `base` is a different branch, and this one is only ever
- * fast-forwarded onto it. Returns what happened, and never throws; a reviewer looking at slightly
- * old code is a worse review, while a failed run is no review at all.
+ * Deliberately blunt — `reset --hard` — and deliberately narrow: blunt only where the branch is
+ * provably nobody's. `placedAt` is the commit weawr last left this worktree standing on. A HEAD
+ * that is still there belongs to a role that has not committed, so the thing a reset throws away
+ * is a reviewer's scratch files, and it follows the base wherever it went — a rebased and
+ * force-pushed branch included, which no fast-forward reaches.
+ *
+ * A HEAD that has moved is somebody's work, and `basedOn` does not promise a role that only
+ * reads: an implementer based on a planner's branch commits, while the plan it started from never
+ * moves again. "What the base is now" is then *behind* it, and a reset is a rewind that takes the
+ * turn's commits off the branch and its uncommitted work off the disk. So a moved HEAD is only
+ * ever fast-forwarded — git refuses that when work in progress is in the way — and one the base
+ * does not contain is left exactly where it is. With no `placedAt` on record (a run from before
+ * it was kept, a pickup after `weawr reset`) the question has no answer, and it is treated as moved.
+ *
+ * Returns what happened, and never throws; a reviewer looking at slightly old code is a worse
+ * review, while a failed run is no review at all. `at` is set exactly when the worktree now
+ * stands on the tip of `base` — that is the next turn's `placedAt`.
  */
-export function catchUp({ git, repo, at, base }) {
+export function catchUp({ git, repo, at, base, placedAt = null }) {
   if (!at || !base) return { moved: false, reason: 'nothing to catch up to' };
   const before = git(['rev-parse', 'HEAD'], at);
   const tip = baseTip({ git, at, base });
   if (!tip) return { moved: false, reason: `no branch or origin branch called ${base}` };
   if (tip.at === before) return { moved: false, reason: 'already up to date', at: tip.at };
-  if (git(['reset', '--hard', tip.at], at) === null) return { moved: false, reason: 'git would not move it' };
+  const contains = (older, newer) => git(['merge-base', '--is-ancestor', older, newer], at) !== null;
+  if (placedAt && before === placedAt) {
+    if (git(['reset', '--hard', tip.at], at) === null) return { moved: false, reason: 'git would not move it' };
+  } else if (contains(before, tip.at)) {
+    // `--ff-only` is the enforcement here too (see pullBase): the refusal is the answer we want.
+    if (git(['merge', '--ff-only', tip.at], at) === null) return { moved: false, reason: 'git would not fast-forward it (uncommitted changes in the way?)' };
+  } else {
+    return { moved: false, reason: contains(tip.at, before)
+      ? `this branch is ahead of ${base}, with commits of its own`
+      : `this branch and ${base} have each moved on, and its commits are not ours to drop` };
+  }
   return { moved: true, from: before, at: tip.at, ref: tip.ref };
 }
 

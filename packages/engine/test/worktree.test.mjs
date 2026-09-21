@@ -250,6 +250,113 @@ test('a worktree put back on an existing branch is not silently left behind', ()
   }
 });
 
+// ---------------------------------------------------------------- a role that writes, based on another role
+
+/** Commit a file from inside a worktree, on whatever branch it is standing on. Returns the new sha. */
+function commitIn(at, file, body) {
+  fs.writeFileSync(path.join(at, file), body);
+  git(['add', file], at);
+  git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', `add ${file}`], at);
+  return git(['rev-parse', 'HEAD'], at);
+}
+const headOf = (at) => git(['rev-parse', 'HEAD'], at);
+
+test('a worktree with commits of its own is never rewound onto the branch it started from', (t) => {
+  // An implementer based on a planner's branch: the plan is committed once and never moves, so
+  // "what the base is now" is behind everything the implementer has done since. Catching up to it
+  // is a rewind, and it took the turn's uncommitted work with it.
+  const dir = repo(t);
+  const plan = commitOn(dir, '7-plan', 'plan.md', 'the plan\n');
+  const impl = makeWorktree({ git, repo: dir, slug: 'gh-7-impl', branch: '7-impl', base: '7-plan' });
+  assert.equal(headOf(impl.path), plan);
+  commitIn(impl.path, 'fix.txt', 'first attempt\n');
+  const mine = commitIn(impl.path, 'fix.txt', 'second attempt\n');
+  fs.writeFileSync(path.join(impl.path, 'fix.txt'), 'not committed yet\n');
+
+  const r = catchUp({ git, repo: dir, at: impl.path, base: '7-plan', placedAt: plan });
+  assert.equal(r.moved, false);
+  assert.match(r.reason, /ahead of 7-plan/);
+  assert.equal(headOf(impl.path), mine, 'the branch is where the implementer left it');
+  assert.equal(fs.readFileSync(path.join(impl.path, 'fix.txt'), 'utf8'), 'not committed yet\n', 'and so is the work in progress');
+});
+
+test('a role that committed keeps its commits when its base moves on without it', (t) => {
+  // The planner revises the plan after the implementer has started. Neither branch contains the
+  // other, and the implementer's commits are nobody's to throw away: it is told, not moved.
+  const dir = repo(t);
+  const plan = commitOn(dir, '7-plan', 'plan.md', 'the plan\n');
+  const impl = makeWorktree({ git, repo: dir, slug: 'gh-7-impl', branch: '7-impl', base: '7-plan' });
+  const mine = commitIn(impl.path, 'fix.txt', 'work\n');
+  commitOn(dir, '7-plan', 'plan.md', 'the plan, revised\n');
+
+  const r = catchUp({ git, repo: dir, at: impl.path, base: '7-plan', placedAt: plan });
+  assert.equal(r.moved, false);
+  assert.match(r.reason, /each moved on/);
+  assert.equal(headOf(impl.path), mine);
+  assert.equal(fs.readFileSync(path.join(impl.path, 'plan.md'), 'utf8'), 'the plan\n');
+});
+
+test('a reviewer that never committed follows a rewritten branch, scratch files and all', (t) => {
+  // The implementer rebased and force-pushed: the reviewer's HEAD is no ancestor of the new tip,
+  // but it is exactly where weawr put it, so nothing on it is the reviewer's. This is the case an
+  // ancestry check alone gets wrong — it would leave the reviewer on code that no longer exists.
+  const dir = repo(t);
+  const v1 = commitOn(dir, '7-fix', 'fix.txt', 'first attempt\n');
+  const review = makeWorktree({ git, repo: dir, slug: 'gh-7-review', branch: '7-fix-review', base: '7-fix' });
+  fs.writeFileSync(path.join(review.path, 'fix.txt'), 'a reviewer poking at it\n');
+
+  git(['checkout', '-q', '7-fix'], dir);
+  fs.writeFileSync(path.join(dir, 'fix.txt'), 'rewritten\n');
+  git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-a', '--amend', '-m', 'rewritten'], dir);
+  const v2 = headOf(dir);
+  git(['checkout', '-q', 'main'], dir);
+  assert.equal(git(['merge-base', '--is-ancestor', v1, v2], dir), null, 'a real rewrite, not a fast-forward');
+
+  const r = catchUp({ git, repo: dir, at: review.path, base: '7-fix', placedAt: v1 });
+  assert.equal(r.moved, true);
+  assert.equal(r.at, v2);
+  assert.equal(fs.readFileSync(path.join(review.path, 'fix.txt'), 'utf8'), 'rewritten\n');
+});
+
+test('a worktree its agent already moved along the base is fast-forwarded the rest of the way', (t) => {
+  // A reviewer that ran `git merge --ff-only` itself to look at a newer head is not where weawr
+  // put it, and has no commits of its own either. Nothing is lost by moving it forwards.
+  const dir = repo(t);
+  const v1 = commitOn(dir, '7-fix', 'fix.txt', 'v1\n');
+  const review = makeWorktree({ git, repo: dir, slug: 'gh-7-review', branch: '7-fix-review', base: '7-fix' });
+  const v2 = commitOn(dir, '7-fix', 'fix.txt', 'v2\n');
+  git(['merge', '-q', '--ff-only', v2], review.path);
+  const v3 = commitOn(dir, '7-fix', 'fix.txt', 'v3\n');
+  fs.writeFileSync(path.join(review.path, 'notes.txt'), 'untracked scratch\n');
+
+  const r = catchUp({ git, repo: dir, at: review.path, base: '7-fix', placedAt: v1 });
+  assert.equal(r.moved, true);
+  assert.equal(r.at, v3);
+  assert.equal(fs.readFileSync(path.join(review.path, 'fix.txt'), 'utf8'), 'v3\n');
+  assert.equal(fs.existsSync(path.join(review.path, 'notes.txt')), true);
+});
+
+test('with no record of where a worktree was put, it is only ever moved forwards', (t) => {
+  // A run from before weawr kept the record, or one picked up again after `weawr reset`. Without
+  // it "has this role committed?" has no answer, so the only move made is the one that cannot lose
+  // anything: a fast-forward, which git itself refuses when work in progress is in the way.
+  const dir = repo(t);
+  commitOn(dir, '7-plan', 'plan.md', 'the plan\n');
+  const impl = makeWorktree({ git, repo: dir, slug: 'gh-7-impl', branch: '7-impl', base: '7-plan' });
+  const mine = commitIn(impl.path, 'fix.txt', 'work\n');
+  assert.equal(catchUp({ git, repo: dir, at: impl.path, base: '7-plan' }).moved, false);
+  assert.equal(headOf(impl.path), mine);
+
+  commitOn(dir, '8-fix', 'fix.txt', 'v1\n');
+  const review = makeWorktree({ git, repo: dir, slug: 'gh-8-review', branch: '8-fix-review', base: '8-fix' });
+  fs.writeFileSync(path.join(review.path, 'fix.txt'), 'in progress\n');
+  commitOn(dir, '8-fix', 'fix.txt', 'v2\n');
+  const blocked = catchUp({ git, repo: dir, at: review.path, base: '8-fix' });
+  assert.equal(blocked.moved, false);
+  assert.match(blocked.reason, /would not fast-forward/);
+  assert.equal(fs.readFileSync(path.join(review.path, 'fix.txt'), 'utf8'), 'in progress\n');
+});
+
 // ---------------------------------------------------------------- keeping up with the base branch
 
 /** A clone with a real `origin` behind it. Both go away when the test ends. */

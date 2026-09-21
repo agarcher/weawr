@@ -144,11 +144,20 @@ checked out, the tests are runnable, and `git diff main...HEAD` is the diff unde
 worktrees, two branches, no fighting over a checkout.
 
 On a **later turn** the worktree already exists — and the reason there is a later turn is that the
-implementer pushed something. So it is fast-forwarded to whatever that branch is now (`git fetch`,
-then `reset --hard`), or the second review would read the first turn's code and conclude its own
-findings had been ignored. That reset only ever runs in a worktree weawr made for this role,
-and only ever moves it onto a *different* branch, so what it discards is a reviewer's scratch
-files, never anyone's commits.
+implementer pushed something. So it is moved to whatever that branch is now (`git fetch`, then
+`reset --hard`), or the second review would read the first turn's code and conclude its own
+findings had been ignored. A rebased, force-pushed branch is followed too, which is why this is a
+reset and not a fast-forward. It only ever runs in a worktree weawr made for this role, and only
+while the branch is still on the commit weawr last left it on — a role that has not committed —
+so what it discards is a reviewer's scratch files, never anyone's commits.
+
+`basedOn` is not only for roles that read. An implementer `basedOn` a planner starts from the
+plan, and then commits, while the plan's branch never moves again. A worktree whose branch has
+moved since weawr placed it is only ever fast-forwarded (git refuses that when uncommitted work is
+in the way), and when the base does not contain its commits — it is ahead of the base, or the two
+have each moved on — it is left exactly as it is, with a line in the log saying so. The same goes
+for a run weawr has no record of placing: one picked up again after `weawr reset`, or started by
+an older weawr.
 
 `basedOn` needs `"worktree": "self"` — only the mode where weawr creates the worktree can
 decide where it starts, so the other modes refuse it at config load rather than quietly ignoring it.

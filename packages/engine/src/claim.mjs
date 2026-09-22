@@ -271,6 +271,23 @@ export function pickCandidates({ issues, rules, viewer, matches, runFor, onSkip 
 }
 
 /**
+ * Whose verdict a merge on `issue` needs: the role of every enabled rule other than the merging
+ * run's own, when that role has a run on the issue or a rule that matches the issue as it is now.
+ * It is the picker's question asked again at merge time. A role none of whose rules ever
+ * dispatched this issue — a team that plans some issues and not others — is not owed a verdict;
+ * one that did, or would now, is, whether or not it has reported yet. A role is listed once, in
+ * `rules` order, and a rule without a role dispatches nobody.
+ */
+export function reviewingRoles({ issue, rules, mergingRole, matches, runFor }) {
+  const out = [];
+  for (const rule of rules) {
+    if (rule.enabled === false || !rule.role || rule.role === mergingRole || out.includes(rule.role)) continue;
+    if (runFor(runKeyFor(issue.identifier, rule.role)) || matches(issue, rule)) out.push(rule.role);
+  }
+  return out;
+}
+
+/**
  * What a run is called in the herdr sidebar: `<issue key> <role> <title>`.
  *
  * The role goes second, before the title, because the sidebar truncates and the title is the part

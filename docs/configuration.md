@@ -113,7 +113,8 @@ The same fields work on every tracker; what they map to on GitHub is in
                               // pickup and when one of its PRs is merged. Only forwards, only when the checkout
                               // is clean and standing on it; anything else is reported and left alone
   "mergeLabel": "auto-merge", // the label on an issue that lets `weawr merge <run key>` merge its PR once every
-                              // reviewing role has approved the PR's current head (recipe revision 2). null turns
+                              // reviewing role has approved the PR's current head (recipe revision 2): every role
+                              // with a run on the issue or a rule matching it now, the merger's own aside. null turns
                               // unattended merging off entirely. See Roles.
   "mergeMethod": "squash",    // how `weawr merge` merges: "squash", "merge" or "rebase". GitHub's branch
                               // protection still applies on top.

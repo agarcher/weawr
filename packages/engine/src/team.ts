@@ -23,7 +23,7 @@ import * as _github from './adapters/trackers/github.mjs';
 // The adapters are still JavaScript. Their inferred types (a `= null` default infers `null`) are
 // worse than none, so they are used untyped here until each is converted.
 const { userDisplay, slugify } = _tracker as Record<string, any>;
-const { alreadyTaken, claimLabelFor, heldByAPerson, issueKeyOf, passLimit, pickCandidates, pickupMarker, runKeyFor, workspaceLabel } = _claim as Record<string, any>;
+const { alreadyTaken, claimLabelFor, heldByAPerson, issueKeyOf, passLimit, pickCandidates, pickupMarker, reviewingRoles, runKeyFor, workspaceLabel } = _claim as Record<string, any>;
 const { resolveCredential } = _auth as Record<string, any>;
 const { agentPlacement, isBlocked, isNameTaken, isStalled, workspaceOwner } = _herdr as Record<string, any>;
 const { desiredBranch, reconcileBranch } = _branch as Record<string, any>;
@@ -285,9 +285,24 @@ export class TeamEngine {
     checks.push({ check: 'pr_open', ok: pr.state === 'open', detail: `${prUrl} is ${pr.state}` });
     checks.push({ check: 'pr_mergeable', ok: pr.conflicts !== true, detail: pr.conflicts === true ? 'GitHub reports conflicts with the base' : pr.conflicts === null ? 'GitHub has not computed mergeability yet' : 'no conflicts' });
     const head: string | null = pr.headSha || null;
-    // 3. every reviewing role's verdict, for this head
-    const reviewers = [...new Set(this.cfg.rules.filter((r: any) => r.enabled !== false && r.role && r.role !== run.role).map((r: any) => r.role as string))];
-    if (!reviewers.length) checks.push({ check: 'verdicts', ok: false, detail: 'this team runs no reviewing role, so nothing can approve the head' });
+    // 3. every reviewing role's verdict, for this head. A role reviews this issue when it has a run
+    // on it or a rule that matches the issue now — the picker's question, asked again — so a role
+    // that never dispatched the issue (a planner whose rule skips the small ones) is not owed a
+    // verdict, while one that did is, reported or not. Without the issue the config decides.
+    let reviewers: string[];
+    if (fresh) {
+      let viewer: any = null;
+      try { viewer = await this.tracker.me(); } catch { /* `assignee:me` reads false; every other field is unaffected */ }
+      const ctx = { viewer, now: this.clock().getTime() };
+      reviewers = reviewingRoles({
+        issue: fresh, rules: this.cfg.rules, mergingRole: run.role,
+        matches: (issue?: any, rule?: any) => { try { return rule.compiled.test(issue, ctx); } catch (e: any) { this.log(`rule ${rule.name}: ${e.message}`); return false; } },
+        runFor: (k?: any) => this.state.runs[k] || null,
+      });
+    } else {
+      reviewers = [...new Set(this.cfg.rules.filter((r: any) => r.enabled !== false && r.role && r.role !== run.role).map((r: any) => r.role as string))];
+    }
+    if (!reviewers.length) checks.push({ check: 'verdicts', ok: false, detail: `no reviewing role has a run on ${issueKey} or a rule that matches it, so nothing can approve the head` });
     for (const role of reviewers) {
       const rr = this.state.runs[runKeyFor(issueKey, role)];
       const v = verdictOf(rr?.result || null);

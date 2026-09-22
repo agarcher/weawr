@@ -272,10 +272,14 @@ Revision 2 makes both of those facts checkable. A reviewer's result carries
 the implementer never merges by hand: when the issue carries the `mergeLabel` (`auto-merge`
 unless configured), it runs `weawr merge <run key>`, which checks, at that moment, that the label
 is on the issue, that every reviewing role's latest verdict approves the PR's *current* head, and
-that the PR is open with no conflicts — then asks GitHub to merge that head (so a push in between
-is refused by GitHub itself, and branch protection still applies), and says on the issue what
-allowed it. A verdict without a commit, including every revision-1 prose verdict, authorises
-nothing; an approval of one head never merges another. `weawr recipe show` says which revision a
+that the PR is open with no conflicts. A reviewing role is any role other than the merger's that
+has a run on the issue or an enabled rule whose `match` fits the issue as it is now — the picker's
+question, asked again. A role that never dispatched the issue (a planner whose rule skips
+`label:small`, say) is not owed a verdict; one that did, or would now, is, reported or not. Then
+it asks GitHub to merge that head (so a push in between is refused by GitHub itself, and branch
+protection still applies), and says on the issue what allowed it. A verdict without a commit,
+including every revision-1 prose verdict, authorises nothing; an approval of one head never
+merges another. `weawr recipe show` says which revision a
 team runs; `weawr recipe upgrade --dry-run` shows the difference and `weawr recipe upgrade`
 moves new tasks to it.
 

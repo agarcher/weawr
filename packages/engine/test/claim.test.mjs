@@ -5,6 +5,7 @@ import {
   ROLE_RE, ROLE_SEPARATOR,
   alreadyTaken, applyRoles, checkBasedOn, checkRoleBranches, claimLabelFor, issueKeyOf,
   heldByAPerson, nextPass, normalizePasses, normalizeRole, passLimit, pickCandidates, pickupMarker,
+  reviewingRoles,
   LEGACY_CLAIM_MARKER,
   runKeyFor, workspaceLabel,
 } from '../dist/claim.mjs';
@@ -340,4 +341,38 @@ test('an agent that died without a result does not spend the role\'s turns by it
   const stamped = { ...died, issueUpdatedAt: '2026-01-01T00:00:01Z' };
   assert.equal(nextPass(stamped, r, moved('2026-01-01T00:00:01Z')), null);
   assert.deepEqual(nextPass(stamped, r, moved('2026-01-01T00:05:00Z')), { pass: 2, holdsClaim: true });
+});
+
+// The merge gate asks the picker's question again: whose verdict does this issue owe?
+test('reviewingRoles: a role owes a verdict when it has a run on the issue or a rule that matches it now', () => {
+  const rules = [
+    { name: 'impl', role: 'impl', match: 'any:true' },
+    { name: 'tech-lead', role: 'plan', match: 'label:ai and not label:lite' },
+    { name: 'reviewer', role: 'review', match: 'label:ai' },
+  ];
+  const labelled = (...labels) => issue({ labels });
+  const matches = (iss, rule) => {
+    if (rule.match === 'any:true') return true;
+    const has = (l) => iss.labels.includes(l);
+    return rule.match === 'label:ai' ? has('ai') : has('ai') && !has('lite');
+  };
+  const runs = {};
+  const runFor = (key) => runs[key] || null;
+  const ask = (iss) => reviewingRoles({ issue: iss, rules, mergingRole: 'impl', matches, runFor });
+  // A lite issue never dispatched the planner: only the reviewer is owed a verdict.
+  assert.deepEqual(ask(labelled('ai', 'lite')), ['review']);
+  // A planned issue owes both, whether or not the planner's rule still matches it.
+  assert.deepEqual(ask(labelled('ai')), ['plan', 'review']);
+  runs['GH-7@plan'] = { role: 'plan', status: 'done' };
+  assert.deepEqual(ask(labelled('ai', 'lite')), ['plan', 'review'], 'a run on the issue counts even when the rule no longer matches');
+  // The merging role never reviews itself; a disabled rule dispatches nobody; a roleless rule is not a reviewer.
+  delete runs['GH-7@plan'];
+  assert.deepEqual(reviewingRoles({ issue: labelled('ai'), rules, mergingRole: 'plan', matches, runFor }), ['impl', 'review']);
+  const off = rules.map((r) => (r.role === 'plan' ? { ...r, enabled: false } : r));
+  assert.deepEqual(reviewingRoles({ issue: labelled('ai'), rules: off, mergingRole: 'impl', matches, runFor }), ['review']);
+  const roleless = [...rules, { name: 'legacy', role: null, match: 'any:true' }];
+  assert.deepEqual(reviewingRoles({ issue: labelled('ai'), rules: roleless, mergingRole: 'impl', matches, runFor }), ['plan', 'review']);
+  // Two rules of one role: the role is listed once, and one matching rule is enough.
+  const tiers = [{ name: 'lite-lead', role: 'plan', match: 'label:ai' }, ...rules];
+  assert.deepEqual(reviewingRoles({ issue: labelled('ai', 'lite'), rules: tiers, mergingRole: 'impl', matches, runFor }), ['plan', 'review']);
 });

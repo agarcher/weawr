@@ -161,7 +161,9 @@ The **merge** (`weawr merge <run key>`, `TeamEngine.mergeRun`) is the one route 
 merge and checks, at the moment it is asked: the issue carries the configured `mergeLabel` now;
 every reviewing role's latest result carries a *structured* `approved` verdict for the PR's
 *current* head (a prose verdict names no head and authorises nothing; an approval of head A never
-merges head B); the PR is open with no conflicts. Then it asks GitHub to merge *that* head
+merges head B); the PR is open with no conflicts. The reviewing roles are the ones the issue
+dispatched: every role but the merger's that has a run on the issue or a rule matching it now
+(`reviewingRoles` in `claim.mjs`), so a role whose rules skip this issue is not waited for. Then it asks GitHub to merge *that* head
 (`sha` in the request, so a push in between is refused by GitHub itself), with the repository's
 branch protection enforced on top, and says on the issue what allowed it. Nothing in a brief
 claims to enforce this; the command does.

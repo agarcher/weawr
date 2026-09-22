@@ -246,3 +246,62 @@ test('merge: the label now, every reviewer\'s structured approval of the current
   const r2 = await app.dispatch({ type: 'run.merge', key: 'GH-7@impl', requestId: 'm1' });
   assert.equal(r2.result.replayed, true); assert.equal(r2.result.operationId, r1.result.operationId);
 });
+
+test('merge: a role that never dispatched the issue is not owed a verdict; one that did, or would now, is', async () => {
+  // A team that plans some issues and not others: the planner's rule skips `lite` issues. The gate asks
+  // the picker's question again at merge time, so a lite issue needs the reviewer alone, while an issue
+  // the planner's rule matches, or one it has a run on, still waits for the planner's verdict.
+  const dir = repo(CONFIG({ roles: ['impl', 'plan', 'review'], rules: [
+    { name: 'impl', role: 'impl', match: 'any:true' },
+    { name: 'tech-lead', role: 'plan', match: 'label:ai and not label:lite and not label:planned', prompt: 'prompts/review-lead.md' },
+    { name: 'review', role: 'review', match: 'any:true', prompt: 'prompts/review-lead.md' },
+  ] }));
+  const gh = { state: 'open', head: 'abcdef1234567', conflicts: false, labels: ['ai', 'lite', 'auto-merge'] };
+  const calls = [];
+  const tracker = {
+    async me() { return { id: 'me' }; },
+    async issueByKey(k) { return ISSUE({ identifier: k, labels: gh.labels }); },
+    async comment(id, body) { calls.push(['comment', body]); },
+    async addLabel() {}, async removeLabel() {}, async assign() {}, async setState() {},
+  };
+  const fetchImpl = async (url, init = {}) => {
+    calls.push([init.method || 'GET', url, init.body ? JSON.parse(init.body) : null]);
+    if (init.method === 'PUT') return new Response(JSON.stringify({ merged: true, sha: 'merged123' }), { status: 200 });
+    return new Response(JSON.stringify({ state: gh.state, merged: false, head: { sha: gh.head }, base: { ref: 'main' }, mergeable: true, mergeable_state: 'clean' }), { status: 200 });
+  };
+  const prUrl = 'https://github.com/o/r/pull/9';
+  const runs = {
+    'GH-7@impl': { rule: 'impl', role: 'impl', pass: 1, status: 'awaiting_merge', issueId: 'i7', issueKey: 'GH-7', title: 't', startedAt: '2026-01-01T00:00:00Z', finishedAt: '2026-01-01T01:00:00Z', agentName: 'gh-7-impl', notified: {}, worktree: 'none', workDir: dir, prUrl, result: { status: 'pr_open', prUrl } },
+    'GH-7@review': { rule: 'review', role: 'review', pass: 1, status: 'done', issueId: 'i7', issueKey: 'GH-7', title: 't', startedAt: '2026-01-01T00:00:00Z', finishedAt: '2026-01-01T02:00:00Z', agentName: 'gh-7-review', notified: {}, worktree: 'none', result: { status: 'nothing_to_do', review: { verdict: 'approved', prUrl, headSha: 'abcdef1' } } },
+  };
+  const paths = teamPaths(dir);
+  const store = SqliteStore.open(storePath(paths.stateDir)); store.save({ runs, nudges: {} });
+  const e = new TeamEngine({ cfg: loadConfig({ paths, promptsRoot: PROMPTS }), tracker, herdr: fakeHerdr(dir), paths, promptsRoot: PROMPTS, store, ids: { hostId: 'h', teamId: 'fac0001' }, log: () => {}, fetchImpl });
+  e.pr = { host: 'github.com', token: 'tok' };
+  // 1. lite: the planner's rule does not match and it never ran, so the reviewer's approval is enough
+  let c = await e.mergeChecks('GH-7@impl');
+  assert.deepEqual(c.reviewers, ['review']);
+  assert.equal(c.ok, true, c.reason);
+  // 2. not lite: the planner's rule matches the issue now, so its missing verdict blocks the merge
+  gh.labels = ['ai', 'auto-merge'];
+  c = await e.mergeChecks('GH-7@impl');
+  assert.deepEqual(c.reviewers, ['plan', 'review']);
+  assert.equal(c.ok, false); assert.match(c.reason, /plan has not reported/);
+  // 3. planned and lite: the rule no longer matches, but the planner has a run on the issue, so it still owes a verdict for this head
+  gh.labels = ['ai', 'lite', 'planned', 'auto-merge'];
+  e.state.runs['GH-7@plan'] = { rule: 'tech-lead', role: 'plan', pass: 1, status: 'done', issueId: 'i7', issueKey: 'GH-7', title: 't', startedAt: '2026-01-01T00:00:00Z', finishedAt: '2026-01-01T00:30:00Z', agentName: 'gh-7-plan', notified: {}, worktree: 'none', result: { status: 'nothing_to_do', summary: 'PLAN READY' } };
+  c = await e.mergeChecks('GH-7@impl');
+  assert.deepEqual(c.reviewers, ['plan', 'review']);
+  assert.equal(c.ok, false); assert.match(c.reason, /plan: unknown/);
+  e.state.runs['GH-7@plan'].result = { status: 'nothing_to_do', review: { verdict: 'approved', prUrl, headSha: 'abcdef1' } };
+  c = await e.mergeChecks('GH-7@impl');
+  assert.equal(c.ok, true, c.reason);
+  // 4. the coordinator's ask names only the roles the issue owes
+  delete e.state.runs['GH-7@plan'];
+  gh.labels = ['ai', 'lite', 'auto-merge'];
+  await e.askForMergeIfReady('GH-7');
+  const ask = calls.find((x) => x[0] === 'comment' && /asking `impl`/.test(x[1]));
+  assert.ok(ask, 'the developer was asked to merge');
+  assert.match(ask[1], /every reviewing role \(`review`\) approved/);
+  assert.doesNotMatch(ask[1], /`plan`/);
+});

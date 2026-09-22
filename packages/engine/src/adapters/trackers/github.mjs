@@ -183,6 +183,34 @@ export class GitHubTracker {
     return d.repository.issue ? this.normalize(d.repository.issue) : null;
   }
 
+  /**
+   * Open or closed, for many issues in one document: `GH-7`, `#181`, … → Map of key → { state } or
+   * null when the issue does not exist (keys that are not issue numbers are left out). One alias
+   * per issue and nothing but its state, so a hundred issues cost one GraphQL point where a
+   * hundred `issueByKey` calls cost a hundred: this is what the enricher asks every tick.
+   */
+  async issueStates(identifiers) {
+    const wanted = [];
+    for (const id of identifiers) { const number = issueNumber(id); if (number) wanted.push({ id, number }); }
+    const out = new Map();
+    if (!wanted.length) return out;
+    const numbers = [...new Set(wanted.map(({ number }) => number))];
+    const fields = numbers.map((number) => `i${number}: issue(number: ${number}) { number state }`).join(' ');
+    const query = `query($owner: String!, $name: String!) { rateLimit { remaining resetAt } repository(owner: $owner, name: $name) { ${fields} } }`;
+    // A number that is not an issue (a pull request, a deleted issue) comes back as an error
+    // *beside* the data for the others, so this reads the answer itself rather than through gql(),
+    // which would refuse the whole batch for one of them. Those keys map to null, like issueByKey.
+    const json = await this.request('POST', this.graphql, { query, variables: { owner: this.owner, name: this.name } });
+    const repo = json?.data?.repository;
+    if (!repo) throw new Error(`GitHub GraphQL: ${(json?.errors || []).map((e) => e.message).join('; ') || 'no data'}`);
+    if (json.data.rateLimit) this.rateLimit = json.data.rateLimit;
+    for (const { id, number } of wanted) {
+      const n = repo[`i${number}`];
+      out.set(id, n ? { state: n.state === 'CLOSED' ? 'closed' : 'open' } : null);
+    }
+    return out;
+  }
+
   async comment(issueId, body) {
     const c = await this.rest('POST', `/issues/${issueId}/comments`, { body });
     return { id: c.id, url: c.html_url };

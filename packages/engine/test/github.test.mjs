@@ -248,3 +248,39 @@ test('without a recognisable repository the tracker says how to name one', () =>
   const t = new GitHubTracker('t', { options: { cwd: '/', repo: null }, fetchImpl: fakeFetch(() => null) });
   assert.throws(() => t.check(), /"tracker": \{ "type": "github", "repo": "owner\/name" \}/);
 });
+
+test('issueStates reads many issues in one document that asks for nothing but their state', async () => {
+  const t = tracker(({ url, body }) => {
+    if (!url.endsWith('/graphql')) return null;
+    const q = body.query;
+    assert.match(q, /rateLimit \{ remaining resetAt \}/, 'the budget rides along, free');
+    assert.equal((q.match(/issue\(number: /g) || []).length, 3, 'one alias per issue');
+    assert.doesNotMatch(q, /comments|body|labels|assignees/, 'state only: this is what keeps the batch at one point');
+    return { json: { data: { rateLimit: { remaining: 4000, resetAt: '2026-09-22T01:00:00Z' }, repository: { i7: { number: 7, state: 'CLOSED' }, i181: { number: 181, state: 'OPEN' }, i999: null } } } };
+  });
+  const states = await t.issueStates(['GH-7', '#181', 'GH-999', 'nope']);
+  assert.equal(t.fetch.calls.length, 1, 'one request for the lot');
+  assert.deepEqual([...states], [['GH-7', { state: 'closed' }], ['#181', { state: 'open' }], ['GH-999', null]]);
+  assert.equal(t.rateLimit.remaining, 4000);
+});
+
+test('issueStates answers for the issues it can when some numbers are not issues', async () => {
+  // GitHub puts "Could not resolve to an Issue" in `errors` for a pull request's number and still
+  // answers for the rest; one PR among a hundred keys must not lose the hundred.
+  const t = tracker(({ url }) => url.endsWith('/graphql') && { json: {
+    errors: [{ message: 'Could not resolve to an Issue with the number of 100.', path: ['repository', 'i100'] }],
+    data: { rateLimit: { remaining: 10, resetAt: 'x' }, repository: { i100: null, i7: { number: 7, state: 'OPEN' } } },
+  } });
+  assert.deepEqual([...await t.issueStates(['GH-100', 'GH-7'])], [['GH-100', null], ['GH-7', { state: 'open' }]]);
+});
+
+test('issueStates refuses when there is no data at all', async () => {
+  const t = tracker(({ url }) => url.endsWith('/graphql') && { json: { errors: [{ message: 'API rate limit already exceeded' }], data: null } });
+  await assert.rejects(() => t.issueStates(['GH-7']), /rate limit already exceeded/);
+});
+
+test('issueStates asks nothing for an empty list', async () => {
+  const t = tracker(() => { throw new Error('no request expected'); });
+  assert.deepEqual([...await t.issueStates([])], []);
+  assert.deepEqual([...await t.issueStates(['nope'])], []);
+});

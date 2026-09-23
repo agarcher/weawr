@@ -134,3 +134,34 @@ test('a refresh in progress is not doubled by the next snapshot', async () => {
   assert.equal(tracker.asks, 1);
   release(new Map());
 });
+
+test('a merge the watcher saw lands at once: the PR is merged now, and the issue is asked again on the next tick, not in ten minutes', async () => {
+  // The merge watcher reads the PR itself, once a minute. Before this, the moment it saw a merge
+  // the task left the in-flight bucket, its TTL grew to ten minutes, and the dashboard kept
+  // showing "issue open · PR open" from the enricher's last look until that TTL ran out.
+  let now = T0;
+  const tracker = batchingTracker();
+  const e = enricher(tracker, () => now);
+  const prUrl = 'https://github.com/o/r/pull/9';
+  const inflight = [{ key: 'GH-1', bucket: 'inflight', finishedAt: null, prUrl, runs: [] }];
+  e.prs.set(prUrl, { at: now, state: 'open' });
+  e.refresh(inflight, now); await settle();
+  assert.equal(tracker.asks.length, 1);
+  assert.equal(e.view().issues['GH-1'], 'open');
+
+  // Thirty seconds on, the watcher sees the merge; the task is finished now, so its TTL is ten minutes.
+  now = T0 + 30_000;
+  e.saw({ issueKey: 'GH-1', prUrl, prState: 'merged' }, now);
+  assert.equal(e.view().prs[prUrl], 'merged', 'what GitHub told the watcher is the answer, without another ask');
+  assert.equal(e.view().issues['GH-1'], 'open', 'the issue keeps what was last known until it is asked again — no flicker to unknown');
+
+  const finished = [{ key: 'GH-1', bucket: 'merged', finishedAt: new Date(now).toISOString(), prUrl, runs: [] }];
+  now = T0 + 31_000;
+  e.refresh(finished, now); await settle();
+  assert.equal(tracker.asks.length, 2, 'the next tick asks about the issue, not the next ten-minute mark');
+  assert.deepEqual(tracker.asks[1].keys, ['GH-1']);
+
+  now = T0 + 60_000;
+  e.refresh(finished, now); await settle();
+  assert.equal(tracker.asks.length, 2, 'and then it is on the finished schedule again');
+});

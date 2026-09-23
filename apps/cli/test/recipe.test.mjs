@@ -305,3 +305,40 @@ test('merge: a role that never dispatched the issue is not owed a verdict; one t
   assert.match(ask[1], /every reviewing role \(`review`\) approved/);
   assert.doesNotMatch(ask[1], /`plan`/);
 });
+
+test('the snapshot follows a merge the watcher saw: the PR reads merged at once, and the issue is asked again on the next tick, not in ten minutes', async () => {
+  // The enricher gives a finished task a ten-minute TTL. The moment the watcher sees the merge the
+  // task is finished, so the enricher's last look — "issue open, PR open", from within the last
+  // ninety seconds — stood on the dashboard for up to ten minutes after the merge (gymly, 2026-09-22).
+  const dir = repo(CONFIG());
+  const asks = [];
+  const tracker = {
+    async me() { return { id: 'me' }; },
+    async issueByKey(k) { return ISSUE({ identifier: k }); },
+    async issueStates(keys) { asks.push([...keys]); return new Map(keys.map((k) => [k, { state: 'closed' }])); },
+    async comment() {}, async addLabel() {}, async removeLabel() {}, async assign() {}, async setState() {},
+  };
+  const prUrl = 'https://github.com/o/r/pull/9';
+  const fetchImpl = async () => new Response(JSON.stringify({ state: 'closed', merged: true, merged_at: '2026-01-02T00:00:00Z', head: { sha: 'abcdef1234567' }, base: { ref: 'main' } }), { status: 200 });
+  const runs = {
+    'GH-7@impl': { rule: 'impl', role: 'impl', pass: 1, status: 'awaiting_merge', issueId: 'i7', issueKey: 'GH-7', title: 't', startedAt: '2026-01-01T00:00:00Z', finishedAt: '2026-01-01T01:00:00Z', agentName: 'gh-7-impl', notified: {}, worktree: 'none', workDir: dir, prUrl, result: { status: 'pr_open', prUrl } },
+  };
+  const paths = teamPaths(dir);
+  const store = SqliteStore.open(storePath(paths.stateDir)); store.save({ runs, nudges: {} });
+  const e = new TeamEngine({ cfg: loadConfig({ paths, promptsRoot: PROMPTS }), tracker, herdr: fakeHerdr(dir), paths, promptsRoot: PROMPTS, store, ids: { hostId: 'h', teamId: 'fac0001' }, log: () => {}, fetchImpl });
+  e.pr = { host: 'github.com', token: 'tok' };
+  // What the enricher last knew, a moment before the merge: both open, and not due for a while.
+  const enricher = e.enrichment();
+  enricher.issues.set('GH-7', { at: Date.now(), state: 'open' });
+  enricher.prs.set(prUrl, { at: Date.now(), state: 'open' });
+
+  await e.checkMerges();
+  assert.equal(e.state.runs['GH-7@impl'].status, 'merged');
+  const seen = (await e.snapshot()).issues.find((i) => i.key === 'GH-7');
+  assert.equal(seen.bucket, 'merged');
+  assert.equal(seen.prState, 'merged', 'the PR the watcher just read is merged on the dashboard, not open from the last look');
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(asks, [['GH-7']], 'the issue was asked about on the very next tick');
+  e.snapshotCache = null;
+  assert.equal((await e.snapshot()).issues.find((i) => i.key === 'GH-7').issueState, 'closed');
+});

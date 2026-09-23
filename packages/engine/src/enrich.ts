@@ -100,6 +100,19 @@ export class Enricher {
     })();
   }
 
+  /**
+   * The merge watcher read the PR itself and saw it merged or closed. That answer is GitHub's, so
+   * it is recorded as if this had asked; and the issue is owed a fresh look on the next tick — the
+   * merge closed it, or the report will — rather than at its next TTL. Without this the task left
+   * the in-flight bucket the moment the merge was seen, its TTL grew to ten minutes, and the
+   * dashboard went on showing "issue open · PR open" from the last look until that ran out. What
+   * was last known about the issue stays until the answer comes: no flicker to unknown.
+   */
+  saw({ issueKey, prUrl, prState }: { issueKey?: string | null; prUrl?: string | null; prState?: string | null }, now = this.sources.clock?.() ?? Date.now()): void {
+    if (prUrl && prState) this.prs.set(prUrl, { at: now, state: prState });
+    if (issueKey) { const known = this.issues.get(issueKey); this.issues.set(issueKey, { ...(known ?? { state: null }), at: 0 }); }
+  }
+
   /** Every due issue in one ask. A failure is one line and marks them all asked: the next tick is not a retry. */
   private async askMany(tracker: any, keys: string[], log: (m: string) => void): Promise<void> {
     const at = this.sources.clock?.() ?? Date.now();

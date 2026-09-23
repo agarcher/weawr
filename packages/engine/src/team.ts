@@ -1369,6 +1369,7 @@ export class TeamEngine {
       if (pr.state === 'open') { await this.keepMergeable(key, run, rule, pr); continue; }
       if (pr.state === 'closed') {
         run.status = 'done'; run.finishedAt ||= this.clock().toISOString(); this.commit(() => { this.saveState(); this.emit('run.pr_closed', key, { prUrl: run.prUrl }); });
+        this.enrichment().saw({ issueKey: run.issueKey || issueKeyOf(key), prUrl: run.prUrl, prState: 'closed' });
         this.log(`${key}: ${run.prUrl} was closed without merging; leaving workspace ${run.workspaceId} and the worktree alone`);
         continue;
       }
@@ -1387,6 +1388,9 @@ export class TeamEngine {
         : [coordinator(`🎉 ${key} is finished — its PR is merged. ${this.leftStanding(run, rule)}`), '', run.prUrl];
       await this.report(key, rule, rule.onMerged, lines.join('\n'), 'done');
       await this.stampAnswered(key, run, rule);
+      // The task just left the in-flight bucket and its enrichment TTL grew with it; the snapshot
+      // must not keep saying "PR open, issue open" for that long about a merge this just saw.
+      this.enrichment().saw({ issueKey: run.issueKey || issueKeyOf(key), prUrl: run.prUrl, prState: 'merged' });
     }
   }
 
